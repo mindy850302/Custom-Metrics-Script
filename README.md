@@ -1,27 +1,126 @@
 # 打沙包懶人包
+* 完善架構，看情境盡可能做到Well-Architect
+* 畫架構圖來輔助說明設計概念
+* 包成CloudFormation
+## Default套路 - 標準三層式結構
+- 有預設的機器，當中會需要塞UserData拿最新的包，UserData會啟用那個程序開始算分
+- 網路上的code都能用
+- ***會有support service list，以上面有支援的為主***
 
-# Default套路 - 標準三層式結構
-### EC2 Level
-1. Create空的ElB
+### 起手式：EC2 + AutoScaling + ELB + CloudFront
+1. Create空的ElB，Listener設定80，Security Group配置allow HTTP from `0.0.0.0/0`
 2. CloudFront指定origin到ELB
-    > 都先default cache
-3. 驗證Instance服務如何運作
+    > 都先default cache不用改東西
+3. 驗證Instance服務如何運作、是否正常
 4. Create AMI打包instance application
 5. 修改user data
     > if needed
-6. 灌進Launch Template/Configuration裡面）
+6. 建立Launch Template/Configuration裡面，指定AMI、IAM Role(InstanceProfile)、UserData
     > prefer template if available
-7. 起ASG並灌user data
-8. 掛進ELB
-9. 設定Cloudwatch跟ScalingPolicy
-    > 
+7. 建立AutoScaling Group，如果因為Spot不能用，就不用混搭
+8. 把AutoScaling Group掛進ELB底下的Target Group
+9. 設定Cloudwatch Alarm跟ScalingPolicy
+    > 預設先設定Target CPU 70%，之後再改
+    > Alarm看有沒有需要送email/SMS/HTTP等等，都可以串
 10. 塞ELB Endpoint接應流量
 11. 測試CloudFront是否能正常access服務
     > 在這階段驗證Header, TTL, Cookie, QueryString的配置
 12. 換成CloudFront接應流量
 13. 監控整體運作狀況，做適當調整
 
-# Compute
+### 權限確認
+- 不能建立IAM Role
+- 如果有給AccessKey，可以透過`aws configure`配置
+- list role不知道會不會過，下Command Line看看：`aws iam list-roles --query Roles[*].Arn`，抓一下有什麼Service Roles可以玩
+
+### 加強安全性
+1. Security Group Chain，讓最外面的那個全開就好，符合最小暴露原則
+2. 如果同個SG裡面要互通，記得要allow protocol from 自己的sg-id
+3. NACL Outbound只開放必要流量
+4. Endpoint盡量用
+5. S3 Bucket Policy限定只能透過Endpoint來訪問
+    > 當同一個Bucket也要允許Public來訪問的情況下，不適用
+6. WAF也要Deploy上去
+    - CloudFront的要放在us-east-1
+    - ALB的看region在哪
+    - Request rate limit先設定寬鬆一點，檢察單位為同一個IP五分鐘算一次，最小為2000次，先設個一萬或十萬
+    - https://gitlab.com/ecloudture-dev/blog/aws-waf-test
+
+### 實作Resilient
+- 大原則： ***避免單點故障的可能性***
+- VPC網路規劃時就要有Multi-AZ的概念，呈現對稱網路
+- AutoScaling Group最少兩台機器跨越兩個AZ
+- RDS要開Multi-AZ
+- ElastiCache要開Cluster mode
+- NAT GW一個AZ一個
+    > 但route table會變得比較麻煩
+- 多用Service List上面的managed services
+
+### RDS
+- [Read replica](https://gitlab.com/ecloudture/olympic/private/use-route-53-with-read-replica-rds-database)
+    1. 看能不能做Vertical Scale，換Instance Type
+        > 八成不能
+    2. 讀寫分離
+    3. 尬Read Replica，要把讀的Endpoint改過來才有用不然還是會在Master上面
+        > Application邏輯處理
+- 如果有需要做VPC migration，換subnet group就好
+- Multi-AZ最好要開
+- backup & restore，週期維持預設就好，除非有特別說備份週期、指定備份時間再異動
+    > 可以point-in-time restore
+
+### DynamoDB
+- Capacity mode: on-demand / provisioned，整體效能取決於這
+    > 我的觀察是通通開on-demand mode下去比較穩
+    > 如果不給弄，就要尻AutoScaling來調整Capaciry Unitㄌ
+- Global Table，僅有Table是空的時候才能建立
+- backup & restore
+    - Point-in-time Recovery，自動備份、最多35天
+    - On-Demand Backup and Restore，完整手動備份
+
+### ElastiCache
+- 預設下只有單個AZ作用
+- Read節點是獨立出來的，解決方法跟Read Replica一樣尬DNS
+- Cluster mode or not
+    - 取決於有沒有要跨ＡＺ部署
+
+### Deploy Application to ECS 
+***＊必先完成上面EC2 level，再來考慮做ECS***
+1. 確認EC2 Instance OS是什麼，決定base image from哪個OS
+2. 先在local寫dockerfile，驗證Application/UserData有辦法包成Container並順利執行
+    > 在每一行bash前面加上`RUN`，若有需要開機運行則是`CMD`，以下為以amazon linux為例，在dockerhub上面可以找到相對應得
+    ```
+    # 指定Base Image, 從docker hub找
+    FROM amazonlinux:1
+
+    # 打包package
+    RUN yum update -y
+    RUN yum install python34 git curl -y
+    RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+    RUN python get-pip.py
+    RUN pip install flask
+    RUN pip install boto3
+    RUN pip install redis
+    RUN pip install requests
+    RUN cd ~
+    RUN git clone https://github.com/KYPan0818/container-easy-http.git
+
+    # 宣告Container對外的Service port，沒指定也沒差，給別人看的
+    EXPOSE 80
+
+    # 指定Container開啟後要執行的指令，跟機器開機腳本差不多概念
+    CMD echo helloworld
+    CMD python --version
+    ```
+2. 在本機驗證好一切如預期運行，再推上去ECR
+> Deploy in EC2，如果用Fargate則可以跳至6
+3. 建立ECS Cluster，記得要指定ECS optimized AMI，AMI ID要看[文件](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html)
+4. 在UserData上面寫入Cluster name，[文件](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_container_instance.html)
+```
+#!/bin/bash
+echo ECS_CLUSTER=your_cluster_name >> /etc/ecs/ecs.config
+```
+5. 確認ECS Cluster底下是否有EC2，如果有，再開始建ECS Service
+6. 以下參考：https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 
 ## ＊EC2
 - 先驗證userdata是否有陷阱
@@ -104,7 +203,7 @@
     1. AWS Backup Service
     2. EFS對抄
 
-## ＊ECS
+## ECS
 - 建Service的時候如果沒有特別指定說要Service Discovery，就把勾勾勾掉
 ### ECR
 - 建好會有`docker push <ECR_TAG>`的資訊可以複製貼上
@@ -130,7 +229,8 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 - AutoScaling規則，看loading在哪邊再去tuning就行
 - register to target group，只有創建service當下可以mapping到target group，若有變更就要recreate service
 
-## Lambda
+## Lambda with API Gateway
+> 如果有特別指定再考慮
 - https://github.com/ecloudvalley/Run-Serverless-CICD-Pipeline-with-AWS-CodeStar-and-Develop-with-AWS-Cloud9
 - https://gitlab.com/ecloudture/olympic/build-serverless-environment-with-aws-lambda
 - https://gitlab.com/ecloudture/aws/aws-ai-workshop
@@ -142,9 +242,9 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
     > 方便debug
 - timeout & memory注意要調整
 
-# S3
-https://gitlab.com/ecloudture/olympic/private/s3-storage-class-lifecycle-policy
-https://gitlab.com/ecloudture/olympic/aws-s3-cors
+## S3
+- https://gitlab.com/ecloudture/olympic/private/s3-storage-class-lifecycle-policy
+- https://gitlab.com/ecloudture/olympic/aws-s3-cors
 ### Cross region replica
 1. 要先建好replica對象Bucket
 2. 設定完成之後的動作，才會複寫過去
@@ -161,6 +261,7 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 - 加減注意會不會撞到這個
 - 應該是很難
 
+### [LifeCycle Policy](https://gitlab.com/ecloudture-dev/blog/s3-storage-class-lifecycle-policy)
 
 
 # Network
@@ -195,7 +296,10 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 - Instance Type頂到肺
 - NAT GW port炸裂
 
+### [VPC Flow Log](https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs.html) if needed
+
 ## ELB
+- 最小deploy需要/27，才能作節點Scale
 - Target group的health check機制注意
 - keepalive如果有特別說的話再改
 ### Session
@@ -225,7 +329,6 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 2. 建立CGW、指到對接端口
 3. 建立VPN Connection
 
-# Elasticity
 ## AutoScaling Group
 ### Launch Template 
 ### Scaling Policy
@@ -235,32 +338,24 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 ### Error Page
 ### Validation
 
-## ElastiCache
-- 預設下只有單個AZ作用
-- Read節點是獨立出來的，解決方法跟Read Replica一樣尬DNS
-### Cluster mode or not
-- 取決於有沒有要跨ＡＺ部署
-
-## Monitor
-
 ## CloudWatch
 ### Mertic
 #### custom
 - Cloudwatch agent
+- [有文件照做就會跑出來](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/publishingMetrics.html)
+- 要注意權限
 #### by second
 - 沒弄過，有[文件](https://aws.amazon.com/blogs/aws/new-high-resolution-custom-metrics-and-alarms-for-amazon-cloudwatch/)
 ### Log
 #### custom
 - Cloudwatch agent
+- 要注意權限
 ### Alarm
 #### period
 - 看要求，不然依據預設Metrics就五分鐘跳一次
 ### Event
 #### schedule, event rule based
 - 可以依據事件或是排成觸發Lambda作業
-
-## VPC Flow Log
-### format
 
 ## Route53 
 ### Private Host Zone
@@ -271,30 +366,32 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 
 ## CloudTrail
 ### Filter log and find specific action then alert (SNS)
+- [結合Athena的範例](https://gitlab.com/ecloudture-dev/blog/posted/querying-cloudtrail-logs-with-aws-athena)
 
 ## Config
-### Rule
+### [Custom Rule](https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config_develop-rules.html)
+- 或是參考[awslabs/aws-config-rules](https://github.com/awslabs/aws-config-rules)
 
-# Database
-## RDS
-### Read replica
-- https://gitlab.com/ecloudture/olympic/private/use-route-53-with-read-replica-rds-database
-### VPC migration
-- 換subnet group
-### Multi-AZ
-### backup & restore
-- 可以point-in-time
-
-## DynamoDB
-- 我的觀察是通通開on-demand mode下去比較穩
-### Global Table
-### Capacity mode: on-demand / provisioned
-### backup & restore
-# Deployment method
 ## Elastic Beanstalk
+- 微乎其微的出現率
+
 ## CloudFormation
+- https://gitlab.com/ecloudture-dev/blog/aws-basic-of-cloudformation
 - https://gitlab.com/ecloudture/olympic/how-to-build-an-elastic-structure/blob/master/lab-network_yaml.yaml
-- 
+- 分層級去看
+    - VPC, Subnet, Route, Gateway, SG, NACL, Endpoint
+    - EC2, Launch configuration/template, AutoScaling Group, Scaling Policy, CloudWatch Alarm
+    > 看需不需要透過cfn-init/userdata，安裝一些套件在EC2
+    - IAM Role
+    - ELB, Target Group, Listener, Routing Policy
+    - RDS, Multi-AZ
+    - DynamoDB
+    - S3, Bucket Policy, Block public access
+    - 有些相關配置要上`Depends On`、Export/Output參數出來的要記住
+
+- 能包的漂亮盡量包
+- 要上註解描述那一區塊在幹嘛
+
 ### CloudFormer
 1. CloudFormation > Sample > 最下面
 2. 餵Username & password
@@ -303,7 +400,6 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 5. 開始打勾勾，最後一步會吐出Template in JSON
     > 再去CloudFormation Designer裡面轉成yaml比較好看（私心推薦
 
-# Management tools
 ## System manager
 - ec2要attached service role才能call
     > 取決於有沒有IAM權限
@@ -320,12 +416,13 @@ https://gitlab.com/ecloudture/olympic/aws-s3-cors
 - 如果有權限的話可以加減看看
 
 
-# CLI
-
-# SDK/API
+## [CLI](https://aws.amazon.com/cli/)
 
 
-# 不會出的
+## SDK/API
+- [boto3](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html)，左邊Available Services點下去找對應服務
+
+## 不會出的（吧
 
 ```
 # Visualization
