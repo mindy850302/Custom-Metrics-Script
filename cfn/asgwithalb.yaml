@@ -1,0 +1,380 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Network Template: ALB and Auto Scaling Group
+
+# This template creates:
+#   Web Security Group
+#   ALB Security Group
+#   ALB
+#   Auto Scaling Group
+#   LaunchConfiguration
+#   LaunchTemplate
+#   IAM Role
+#   IAM Policy
+#   Scaling Policy
+#   CloudWatch Alarm
+#   LifecycleHook
+
+Parameters:
+
+  NetworkStackName:
+    Description: >-
+      Name of an active CloudFormation stack that contains the networking
+      resources, such as the VPC and subnet that will be used in this stack.
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+    Default: test-vpc
+
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues: [t2.micro, t2.small, t2.medium, t2.large,
+      t3.micro, t3.small, t3.medium, t3.large,]
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: 9
+    MaxLength: 18
+    Default: 0.0.0.0/0
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  LatestAmiId:
+    Type:  'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-gp2'
+
+  AutoScalingGroupMinSize:
+    Type: Number
+    Description: Minimum size of Group ASG.
+    Default: 1
+
+  AutoScalingGroupDesiredSize:
+    Type: Number
+    Description: Desired size of Group ASG.
+    Default: 2
+    
+  AutoScalingGroupMaxSize:
+    Type: Number
+    Description: Maximum size of Group ASG.
+    Default: 5
+
+######################
+# Resources section
+######################
+
+Resources:
+
+  IAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Resource: "*"
+          Action:
+          - autoscaling:CompleteLifecycleAction
+          - ec2:DescribeTags
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      - !Ref IAMPolicy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action: sts:AssumeRole
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  ## Security Group for EC2
+
+  WebSecurityGroup:  
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "Web SG"
+      GroupDescription: "Security group with allow ELB"
+      VpcId: !Sub ${NetworkStackName}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+
+  ## Security Group for ALB
+
+  ALBSecurityGroup:  
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "ALB SG"
+      GroupDescription: "Security group with allow HTTP(s)"
+      VpcId: !Sub ${NetworkStackName}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0    
+
+  ## Auto Scaling group
+
+  WebServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: ALBListener
+    Properties:
+      AutoScalingGroupName: WebServerGroup
+      AvailabilityZones:
+      - !Select [ 0, !GetAZs '' ]
+      - !Select [ 1, !GetAZs '' ]
+      VPCZoneIdentifier:
+      - Ref: 
+        Fn::ImportValue:
+          !Sub ${NetworkStackName}-PublicSubnet1
+      - Ref: 
+        Fn::ImportValue:
+          !Sub ${NetworkStackName}-PublicSubnet2
+      LaunchConfigurationName: !Ref LaunchConfig
+      DesiredCapacity: !Ref AutoScalingGroupDesiredSize
+      MinSize: !Ref AutoScalingGroupMinSize
+      MaxSize: !Ref AutoScalingGroupMaxSize
+      TargetGroupARNs: 
+      - Ref: ALBTargetGroup
+      #LoadBalancerNames: 
+      #- Ref: ApplicationLoadBalancer
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-ASG"
+        PropagateAtLaunch: 'true'
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !GetAtt InstanceProfile.Arn
+      KeyName: !Ref KeyName
+      ImageId: !Ref LatestAmiId
+      SecurityGroups: [!Ref 'WebSecurityGroup']
+      InstanceType: !Ref InstanceType
+      # SpotPrice: 0.0045
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Install Apache Web Server and PHP 
+          yum install -y php72 wget httpd24
+          # Download Lab files 
+          wget https://raw.githubusercontent.com/KYPan0818/CodeDeploy-php-lb/master/index.php
+          mv index.php /var/www/html/
+          # Start web service 
+          chkconfig httpd on 
+          service httpd start
+          # Enable ssm-agent
+          yum install amazon-ssm-agent -y
+          /sbin/start amazon-ssm-agent
+          /opt/aws/bin/cfn-signal --exit-code $? \
+                   --stack  ${AWS::StackName} \
+                   --resource NodeGroup  \
+                   --region ${AWS::Region}          
+
+  # Launch Template
+
+  MyLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-LaunchTemplate"
+      LaunchTemplateData: 
+        SecurityGroupIds: 
+           - !Ref WebSecurityGroup
+        TagSpecifications: 
+          -
+            ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: Web Server
+        UserData: 
+          Fn::Base64:
+            !Sub |
+            #!/bin/bash
+            # Install Apache Web Server and PHP 
+            yum install -y php72 wget httpd24
+            # Download Lab files 
+            wget https://raw.githubusercontent.com/KYPan0818/CodeDeploy-php-lb/master/index.php
+            mv index.php /var/www/html/
+            # Start web service 
+            chkconfig httpd on 
+            service httpd start
+            # Enable ssm-agent
+            yum install amazon-ssm-agent -y
+            /sbin/start amazon-ssm-agent
+            /opt/aws/bin/cfn-signal --exit-code $? \
+                     --stack  ${AWS::StackName} \
+                     --resource NodeGroup  \
+                     --region ${AWS::Region}
+        IamInstanceProfile: 
+          Arn: !GetAtt InstanceProfile.Arn
+        KeyName: !Ref KeyName
+        ImageId: 
+          !If
+            - PreferredDefaultAMI
+            - !Ref LatestAMIId
+            # - !FindInMap [AMIMap, !Ref "AWS::Region", ami ]   
+        InstanceType: !Ref InstanceType
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 10
+              VolumeType: gp2
+              DeleteOnTermination: true
+
+  # Scaling Policy
+
+  WebServerScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref 'WebServerGroup'
+      Cooldown: '60'
+      ScalingAdjustment: 2
+
+  WebServerScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref 'WebServerGroup'
+      Cooldown: '60'
+      ScalingAdjustment: -1
+
+  # CloudWatch Alarm
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 75% for 5 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 75
+      AlarmActions: [!Ref 'WebServerScaleUpPolicy']
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref 'WebServerGroup'
+      ComparisonOperator: GreaterThanThreshold
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 40% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 40
+      AlarmActions: [!Ref 'WebServerScaleDownPolicy']
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref 'WebServerGroup'
+      ComparisonOperator: LessThanThreshold
+
+  # Life Cycle hook
+
+  LCH:
+    Type: AWS::AutoScaling::LifecycleHook
+    Properties:
+      AutoScalingGroupName: !Ref NodeGroup
+      HeartbeatTimeout: 60
+      DefaultResult: CONTINUE
+      LifecycleHookName: !Sub "${NodeGroupName}-LCH"
+      LifecycleTransition: autoscaling:EC2_INSTANCE_TERMINATING
+
+## ALB
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+      - Ref: 
+        Fn::ImportValue:
+          !Sub ${NetworkStackName}-PublicSubnet1
+      - Ref: 
+        Fn::ImportValue:
+          !Sub ${NetworkStackName}-PublicSubnet2
+      SecurityGroups:
+      - Ref: ALBSecurityGroup
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn:
+        Ref: ApplicationLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Sub ${NetworkStackName}-VPCID
+
+######################
+# Outputs section
+######################
+
+Outputs:
+
+  ALB:
+    Description: ALB Endpoint
+    Value: !Ref ApplicationLoadBalancer
+    Export:
+      Name: !Sub '${AWS::StackName}-ALB'
+  
+  WebSG:
+    Description: The subnet ID to use for private subnet
+    Value: !Ref WebSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSG' 
+
+  ALBSG:
+    Description: The subnet ID to use for private subnet
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ALBSG'

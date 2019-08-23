@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Network Template: ALB and Auto Scaling Group
+
+# This template creates:
+#   S3 Bucket
+#   S3 Bucket Policy
+
+Parameters:
+
+  BucketName:
+    Description: Your S3 Bucket name
+    Type: String
+
+  NetworkStackName:
+    Description: >-
+      Name of an active CloudFormation stack that contains the networking
+      resources, such as the VPC and subnet that will be used in this stack.
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+    Default: test-vpc
+
+######################
+# Resources section
+######################
+
+Resources:
+
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref BucketName
+      DeletionPolicy: Retain
+      VersioningConfiguration:
+        Status: Suspended 
+      CorsConfiguration: 
+        CorsRules:
+          AllowedHeaders:
+            - '*'
+          AllowedMethods:
+            - 'GET'
+          AllowedOrigins:
+            - '*'
+          MaxAge:
+            - 3000
+
+  S3BucketPolicyViaEndpoint:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument: 
+        Statement: 
+          - 
+            Action: 
+              - "s3:GetObject"
+            Effect: "Allow"
+            Resource: !Sub '${S3Bucket.Arn}/*'
+            Principal: "*"
+            Condition:
+              StringEquals:
+                'aws:sourceVpce': {'Fn::ImportValue': !Sub '${NetworkStackName}-S3EndpointGWID'}  
+
+  S3BucketPolicyPublic:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+        - Principal: '*'
+          Action: 's3:GetObject'
+          Effect: Allow
+          Resource: !Sub '${S3Bucket.Arn}/*'
+
+######################
+# Outputs section
+######################
+
+Outputs:
+  
+  BucketName:
+    Description: S3 Bucket Name
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-S3BucketName'

@@ -1,20 +1,28 @@
 # 打沙包懶人包
-* 完善架構，看情境盡可能做到Well-Architect
-* 畫架構圖來輔助說明設計概念
-* 包成CloudFormation
+1. 完善架構，看情境盡可能做到Well-Architect
+2. 畫架構圖來輔助說明設計概念
+3. 包成CloudFormation
+* 千萬不要為了追求Cost、Latency，而放棄其他層面該做的
 ## Default套路 - 標準三層式結構
 - 有預設的機器，當中會需要塞UserData拿最新的包，UserData會啟用那個程序開始算分
 - 網路上的code都能用
 - ***會有support service list，以上面有支援的為主***
+
+### 權限確認
+- 不能建立IAM Role，但可以看能利用的權限有哪些
+- 如果有給AccessKey，可以透過`aws configure`配置
+- list role不知道會不會過，下Command Line看看：`aws iam list-roles --query Roles[*].Arn`，抓一下有什麼Service Roles可以玩
+- 當跳出Permission Deny，確認Region是否在允許範圍內、服務能不能用、機器大小或是IAM不能用
 
 ### 起手式：EC2 + AutoScaling + ELB + CloudFront
 1. Create空的ElB，Listener設定80，Security Group配置allow HTTP from `0.0.0.0/0`
 2. CloudFront指定origin到ELB
     > 都先default cache不用改東西
 3. 驗證Instance服務如何運作、是否正常
-4. Create AMI打包instance application
-5. 修改user data
+4. 修改user data，建議先尬CloudWatch agent推memory/log出來
     > if needed
+    > [看文件照做](https://aws.amazon.com/blogs/aws/new-high-resolution-custom-metrics-and-alarms-for-amazon-cloudwatch/)
+5. Create AMI打包EC2 Instance
 6. 建立Launch Template/Configuration裡面，指定AMI、IAM Role(InstanceProfile)、UserData
     > prefer template if available
 7. 建立AutoScaling Group，如果因為Spot不能用，就不用混搭
@@ -23,15 +31,32 @@
     > 預設先設定Target CPU 70%，之後再改
     > Alarm看有沒有需要送email/SMS/HTTP等等，都可以串
 10. 塞ELB Endpoint接應流量
+    > 不要塞IP出去，用hostname才能真正藏著service endpoint
 11. 測試CloudFront是否能正常access服務
     > 在這階段驗證Header, TTL, Cookie, QueryString的配置
 12. 換成CloudFront接應流量
 13. 監控整體運作狀況，做適當調整
 
-### 權限確認
-- 不能建立IAM Role
-- 如果有給AccessKey，可以透過`aws configure`配置
-- list role不知道會不會過，下Command Line看看：`aws iam list-roles --query Roles[*].Arn`，抓一下有什麼Service Roles可以玩
+### 監控
+- 靠CloudWatch Metrics, Alarms解決
+- 先把有用的Metrics都先配置一輪Alarm
+    - CPU above 70%, under 32%
+    - Memory above 1.5G
+    - Network Traffic above多少之類的
+    - Load Balancer Traffic above多少之類的
+    - RDS Connection超過多少
+    - RDS CPU超過多少
+    - ElastiCache Memory超過多少
+    - ElastiCache CPU超過多少
+    - NAT GW的運作狀況，[這邊有範本](https://github.com/widdix/aws-cf-templates/blob/master/vpc/vpc-nat-gateway.yaml)
+- 看沙包面板的分數現在是上升或下降
+    - 若下降則是Response有異常，檢查服務是否正常運作、或是需要調整capacity
+- 看沙包事件，會顯示request/response之間的關係，從而去判定該做哪一段的效能調整
+    - EC2 (ASG)
+    - ELB
+    - Database level
+    - Storage
+- EBS撞到Disk I/O的話 → 調IOPS
 
 ### 加強安全性
 1. Security Group Chain，讓最外面的那個全開就好，符合最小暴露原則
@@ -46,15 +71,17 @@
     - Request rate limit先設定寬鬆一點，檢察單位為同一個IP五分鐘算一次，最小為2000次，先設個一萬或十萬
     - https://gitlab.com/ecloudture-dev/blog/aws-waf-test
 
-### 實作Resilient
+### 實作Resilient - 滿足HA、Scalability
 - 大原則： ***避免單點故障的可能性***
 - VPC網路規劃時就要有Multi-AZ的概念，呈現對稱網路
 - AutoScaling Group最少兩台機器跨越兩個AZ
 - RDS要開Multi-AZ
 - ElastiCache要開Cluster mode
 - NAT GW一個AZ一個
-    > 但route table會變得比較麻煩
+    > 但route table會變得比較麻煩，自行取捨
 - 多用Service List上面的managed services
+- DNS Health Check，若服務端點出現問題，自動failover去備援站點
+- CloudFront上面可以設定Error Page，假設後方出現4xx/5xx的話，導流去某一個path，ex. error.html，上面寫說網站現正維護中之類的
 
 ### RDS
 - [Read replica](https://gitlab.com/ecloudture/olympic/private/use-route-53-with-read-replica-rds-database)
@@ -174,6 +201,16 @@ echo ECS_CLUSTER=your_cluster_name >> /etc/ecs/ecs.config
 - 如果允許混搭，那就可以混instance types & pricing options
 - Health check通常會搭配用ELB，選成EC2的話會以檢查physical host function為主
 
+### Re-Run Userdata after launched EC2
+- [Linux](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/user-data.htm)
+    - 看[Cloud-init](https://cloudinit.readthedocs.io/en/latest/topics/examples.html)文件去修改Service配置黨
+    - [Knoledage center有把它改成每次restart後都會重新執行userdata的範例](https://aws.amazon.com/premiumsupport/knowledge-center/execute-user-data-ec2/)
+- [Windows](https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/ec2-windows-user-data.html)
+    - 進去OS找Cloud-Init的服務
+        > 或是Cloud Config，有點忘記詳細名稱
+    - 當中有一個分頁有個選項可以打勾，要重新跑一次UserData
+    - 每次都要再去勾才會生效
+
 ### Instance Type
 - 看有沒有用對，但八成會限定`t2.micro`
 - 不然可以搭配AutoScaling做混搭的request
@@ -186,6 +223,8 @@ echo ECS_CLUSTER=your_cluster_name >> /etc/ecs/ecs.config
 - 最好轉存到EBS、CloudWatch Logs上面做長期Store
 
 ### EBS
+- 容量不夠的話可以直接extend，但不能縮；改完建議做restart完整load進來一次，不要在OS直接調整
+- 撞到Disk I/O的話 → 調IOPS
 - Snapshot
 - Encryption
     - used volume wanna be encryted
@@ -318,7 +357,7 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 - 有內建health check的功能在裡面，如果record有問題就不會送進去那個ip
 
 ### Health check & Failover
-> 詹哥說他會
+- https://gitlab.com/ecloudture-dev/aws/multi-region-failover-with-amazon-route53
 
 ### test record set
 - Route53點進去Hosted Zone之後，上面有個地方可以開始測試這個Zone的records
@@ -328,8 +367,10 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 1. 建立VGW、Attach到VPC
 2. 建立CGW、指到對接端口
 3. 建立VPN Connection
+- https://gitlab.com/ecloudture/aws/ect-course/aws-architecture/tree/master/03-vpn-connection
 
 ## AutoScaling Group
+- https://gitlab.com/ecloudture/aws/ect-course/aws-architecture/tree/master/04-elastic-your-architecture
 ### Launch Template 
 ### Scaling Policy
 
@@ -378,6 +419,7 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 ## CloudFormation
 - https://gitlab.com/ecloudture-dev/blog/aws-basic-of-cloudformation
 - https://gitlab.com/ecloudture/olympic/how-to-build-an-elastic-structure/blob/master/lab-network_yaml.yaml
+- https://gitlab.com/ecloudture/aws/ect-course/aws-architecture/tree/master/05-deploy-your-cloudformation-template
 - 分層級去看
     - VPC, Subnet, Route, Gateway, SG, NACL, Endpoint
     - EC2, Launch configuration/template, AutoScaling Group, Scaling Policy, CloudWatch Alarm
@@ -391,6 +433,10 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 
 - 能包的漂亮盡量包
 - 要上註解描述那一區塊在幹嘛
+- 飯粒們  
+    - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html
+    - https://github.com/awslabs/aws-cloudformation-templates
+    - https://github.com/widdix/aws-cf-templates
 
 ### CloudFormer
 1. CloudFormation > Sample > 最下面
