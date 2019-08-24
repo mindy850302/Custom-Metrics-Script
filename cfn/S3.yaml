@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
-  Network Template: ALB and Auto Scaling Group
+  S3 Template: S3 Bucket and Bucket Policy 
 
 # This template creates:
 #   S3 Bucket
@@ -12,15 +12,9 @@ Parameters:
     Description: Your S3 Bucket name
     Type: String
 
-  NetworkStackName:
-    Description: >-
-      Name of an active CloudFormation stack that contains the networking
-      resources, such as the VPC and subnet that will be used in this stack.
+  S3EndpointId:
+    Description: The S3 Endpoint ID of VPC
     Type: String
-    MinLength: 1
-    MaxLength: 255
-    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
-    Default: test-vpc
 
 ######################
 # Resources section
@@ -30,21 +24,21 @@ Resources:
 
   S3Bucket:
     Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
     Properties:
       BucketName: !Ref BucketName
-      DeletionPolicy: Retain
       VersioningConfiguration:
         Status: Suspended 
-      CorsConfiguration: 
-        CorsRules:
-          AllowedHeaders:
-            - '*'
-          AllowedMethods:
-            - 'GET'
-          AllowedOrigins:
-            - '*'
-          MaxAge:
-            - 3000
+      # CorsConfiguration: 
+      #   CorsRules: 
+      #   - AllowedHeaders: 
+      #       - '*'
+      #   - AllowedMethods: 
+      #       - GET
+      #   - AllowedOrigins: 
+      #       - '*'
+      #   - MaxAge: 3000
+        
 
   S3BucketPolicyViaEndpoint:
     Type: 'AWS::S3::BucketPolicy'
@@ -60,7 +54,8 @@ Resources:
             Principal: "*"
             Condition:
               StringEquals:
-                'aws:sourceVpce': {'Fn::ImportValue': !Sub '${NetworkStackName}-S3EndpointGWID'}  
+                # 'aws:sourceVpce': {'Fn::ImportValue': !Sub '${NetworkStackName}-S3EndpointGWID'}  
+                aws:sourceVpce': !Ref S3EndpointId
 
   S3BucketPolicyPublic:
     Type: 'AWS::S3::BucketPolicy'

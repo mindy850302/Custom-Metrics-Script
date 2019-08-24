@@ -1,8 +1,17 @@
 # 打沙包懶人包
 1. 完善架構，看情境盡可能做到Well-Architect
 2. 畫架構圖來輔助說明設計概念
-3. 包成CloudFormation
+3. 包成CloudFormation Template
 * 千萬不要為了追求Cost、Latency，而放棄其他層面該做的
+* Dashboard分數僅供參考，並不代表真正成績，我們大會會review架構評分：
+    * **Security**
+    * **Automation**
+        * 不管你是要自己寫成一包部署下去
+        * 或是Github找template直接deploy之後再改設定
+        * ***架構有的設定都要呈現在CloudFormation Resources那邊，才會做為評判標準***
+    * Performation
+    * Cost
+
 ## Default套路 - 標準三層式結構
 - 有預設的機器，當中會需要塞UserData拿最新的包，UserData會啟用那個程序開始算分
 - 網路上的code都能用
@@ -14,18 +23,40 @@
 - list role不知道會不會過，下Command Line看看：`aws iam list-roles --query Roles[*].Arn`，抓一下有什麼Service Roles可以玩
 - 當跳出Permission Deny，確認Region是否在允許範圍內、服務能不能用、機器大小或是IAM不能用
 
+### 網路環境確認
+- CIDR範圍、切割狀況
+- VPC有沒有啟用DNS Resolution
+    - Enable DNS resolution
+    - Enable DNS hostnames
+- SG, NACL, Route Table, Gateway彼此之間的關係
+- Enable VPC Flow、推去CloudWatch Logs方便查看
+
 ### 起手式：EC2 + AutoScaling + ELB + CloudFront
 1. Create空的ElB，Listener設定80，Security Group配置allow HTTP from `0.0.0.0/0`
 2. CloudFront指定origin到ELB
-    > 都先default cache不用改東西
+    - 都先default cache不用改東西
+    - 等到ELB+ASG一切穩定之後再開始測試CloudFront
 3. 驗證Instance服務如何運作、是否正常
-4. 修改user data，建議先尬CloudWatch agent推memory/log出來
-    > if needed
-    > [看文件照做](https://aws.amazon.com/blogs/aws/new-high-resolution-custom-metrics-and-alarms-for-amazon-cloudwatch/)
+    - 先理解單台是如何作業的
+    - 該配置的套件、相依性
+    - 能夠順利乘載流量，先把EC2 Hostname送出去接流量
+    - 再寫成UserData
+4. 測試、修改user data，建議先尬CloudWatch agent推memory/log出來
+    - [看文件照做安裝CloudWatch Agent](https://aws.amazon.com/blogs/aws/new-high-resolution-custom-metrics-and-alarms-for-amazon-cloudwatch/)
 5. Create AMI打包EC2 Instance
-6. 建立Launch Template/Configuration裡面，指定AMI、IAM Role(InstanceProfile)、UserData
+6. 建立Launch Template/Configuration裡面
     > prefer template if available
-7. 建立AutoScaling Group，如果因為Spot不能用，就不用混搭
+    - 指定AMI
+    - IAM Role(InstanceProfile)
+    - UserData
+    > 如果用Configuration，要多設定
+    - Instance Type
+    - Pricing Model
+    - Security Group
+    
+7. 建立AutoScaling Group
+    - 如果Spot不能用，就不用混搭
+    - 如有限定Instance Type，也不用混搭
 8. 把AutoScaling Group掛進ELB底下的Target Group
 9. 設定Cloudwatch Alarm跟ScalingPolicy
     > 預設先設定Target CPU 70%，之後再改
@@ -38,17 +69,22 @@
 13. 監控整體運作狀況，做適當調整
 
 ### 監控
+- Application有需求要寫Log的話，直接靠CloudWatch Agent推出來
 - 靠CloudWatch Metrics, Alarms解決
 - 先把有用的Metrics都先配置一輪Alarm
     - CPU above 70%, under 32%
     - Memory above 1.5G
-    - Network Traffic above多少之類的
-    - Load Balancer Traffic above多少之類的
-    - RDS Connection超過多少
-    - RDS CPU超過多少
-    - ElastiCache Memory超過多少
-    - ElastiCache CPU超過多少
-    - NAT GW的運作狀況，[這邊有範本](https://github.com/widdix/aws-cf-templates/blob/master/vpc/vpc-nat-gateway.yaml)
+    - Network Traffic 
+    - ALB Traffic 
+    - ALB RequestCount → 推推，ResponseTime會牽連到DB端，不太準
+    - ALB ActiveConnectionCount 
+    - ALB HTTPCode_ELB_5XX_Count
+    - RDS Connection → 推推
+    - RDS CPU
+    - ElastiCache Memory
+    - ElastiCache CPU
+    - DynamoDB R/W情況，如果capacity mode是on-demand就不用管
+    - NAT GW 運作狀況，[這邊有範本](https://github.com/widdix/aws-cf-templates/blob/master/vpc/vpc-nat-gateway.yaml)
 - 看沙包面板的分數現在是上升或下降
     - 若下降則是Response有異常，檢查服務是否正常運作、或是需要調整capacity
 - 看沙包事件，會顯示request/response之間的關係，從而去判定該做哪一段的效能調整
@@ -57,18 +93,27 @@
     - Database level
     - Storage
 - EBS撞到Disk I/O的話 → 調IOPS
+- EFS效能會看使用狀況決定
+    - Throughput一般建議使用 ***Bursting mode***，因為Provisioned mode會看使用量（以TB為單位）去調整，用大量空間去換較好的Throughput
+    - Performance跟EBS一樣，General Purpose可以解決大部分場景；如果場景I/O相對敏感，建議改為 ***Max I/O***
 
 ### 加強安全性
 1. Security Group Chain，讓最外面的那個全開就好，符合最小暴露原則
 2. 如果同個SG裡面要互通，記得要allow protocol from 自己的sg-id
 3. NACL Outbound只開放必要流量
 4. Endpoint盡量用
-5. S3 Bucket Policy限定只能透過Endpoint來訪問
+    - S3 Gateway
+    - DynamoDB Gateway
+    - [CloudWatch Metric Interface](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch-and-interface-VPC.html)
+    - [CloudWatch Log Interface](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/cloudwatch-logs-and-interface-VPC.html)
+5. S3 Bucket Policy限定[只能透過Endpoint來訪問](https://docs.aws.amazon.com/AmazonS3/latest/dev/example-bucket-policies-vpc-endpoint.html)
     > 當同一個Bucket也要允許Public來訪問的情況下，不適用
-6. WAF也要Deploy上去
+6. [AWS WAF](https://docs.aws.amazon.com/solutions/latest/aws-waf-security-automations/architecture.html)也要Deploy上去
     - CloudFront的要放在us-east-1
     - ALB的看region在哪
     - Request rate limit先設定寬鬆一點，檢察單位為同一個IP五分鐘算一次，最小為2000次，先設個一萬或十萬
+    
+    - Flooding, XSS, SQL Injection, Bad Bot, 黑白名單都可以透過[awslabs/aws-waf-security-automations](https://github.com/awslabs/aws-waf-security-automations)實現
     - https://gitlab.com/ecloudture-dev/blog/aws-waf-test
 
 ### 實作Resilient - 滿足HA、Scalability
@@ -87,11 +132,12 @@
 - [Read replica](https://gitlab.com/ecloudture/olympic/private/use-route-53-with-read-replica-rds-database)
     1. 看能不能做Vertical Scale，換Instance Type
         > 八成不能
-    2. 讀寫分離
+    2. 讀寫分離，要試看看能不能做，不能的話只能單靠Master
+        > 應該會可以搭配ElastiCache處理
     3. 尬Read Replica，要把讀的Endpoint改過來才有用不然還是會在Master上面
         > Application邏輯處理
 - 如果有需要做VPC migration，換subnet group就好
-- Multi-AZ最好要開
+- ***Multi-AZ最好要開***
 - backup & restore，週期維持預設就好，除非有特別說備份週期、指定備份時間再異動
     > 可以point-in-time restore
 
@@ -106,9 +152,10 @@
 
 ### ElastiCache
 - 預設下只有單個AZ作用
+    > 有單點故障可能性，要看場景搭配
 - Read節點是獨立出來的，解決方法跟Read Replica一樣尬DNS
 - Cluster mode or not
-    - 取決於有沒有要跨ＡＺ部署
+    - 取決於有沒有要跨AZ部署
 
 ### Deploy Application to ECS 
 ***＊必先完成上面EC2 level，再來考慮做ECS***
@@ -148,6 +195,8 @@ echo ECS_CLUSTER=your_cluster_name >> /etc/ecs/ecs.config
 ```
 5. 確認ECS Cluster底下是否有EC2，如果有，再開始建ECS Service
 6. 以下參考：https://gitlab.com/ecloudture/aws/aws-ecs-workshop
+7. ECS Services預設只針對CPU/Memory去成長，要看情況搭配，或是把container/task custom metrics再丟出來往後處理
+- 只有創建ECS Service當下可以mapping到target group，若有變更就要recreate service
 
 ## ＊EC2
 - 先驗證userdata是否有陷阱
@@ -349,6 +398,42 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 - 把HTTPS/TLS做加解密的動作在ELB上面解決，讓EC2 CPU的loading shift出來做該做的事情
 - 一般搭配ACM處理
 
+## CloudFormation
+- 分層級去看
+    - VPC, Subnet, Route, Gateway, SG, NACL, Endpoint
+    - EC2, Launch configuration/template, AutoScaling Group, Scaling Policy, CloudWatch Alarm
+    > 看需不需要透過cfn-init/userdata，安裝一些套件在EC2
+    - IAM Role
+    - ELB, Target Group, Listener, Routing Policy
+    - RDS, Multi-AZ
+    - DynamoDB
+    - S3, Bucket Policy, Block public access
+    - 有些相關配置要上`Depends On`、Export/Output參數出來的要記住
+
+- 能包的漂亮盡量包，要上註解描述那一區塊在幹嘛
+    > 有空的話
+- 可以拆掉分別用stack建立 → 相對簡單
+- Serverless的部分用SAM去部署比較簡單
+- 常用飯粒們  
+    - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html
+    - https://github.com/awslabs/aws-cloudformation-templates
+    - https://github.com/widdix/aws-cf-templates
+- Container
+    - [pahud/ecs-cfn-refarch](https://github.com/pahud/ecs-cfn-refarch)
+    - [aws-samples/amazon-eks-refarch-cloudformation](https://github.com/aws-samples/amazon-eks-refarch-cloudformation)
+- 沒什麼用的
+    - https://gitlab.com/ecloudture-dev/blog/aws-basic-of-cloudformation
+    - https://gitlab.com/ecloudture/olympic/how-to-build-an-elastic-structure/blob/master/lab-network_yaml.yaml
+    - https://gitlab.com/ecloudture/aws/ect-course/aws-architecture/tree/master/05-deploy-your-cloudformation-template
+
+### CloudFormer
+1. CloudFormation > Sample > 最下面
+2. 餵Username & password
+3. 看IAM有沒有權限建立起來，這Template會去建Role，有可能權限被鎖不能用
+4. Deploy好之後，透過HTTPS訪問EC2 IP，略過憑證檢查
+5. 開始打勾勾，最後一步會吐出Template in JSON
+    > 再去CloudFormation Designer裡面轉成yaml比較好看（私心推薦
+
 ## Route53
 - 主要應該會是透過Private Hosted Zone
 - 要記得associate VPC，那個VPC才會生效
@@ -415,36 +500,6 @@ https://gitlab.com/ecloudture/aws/aws-ecs-workshop
 
 ## Elastic Beanstalk
 - 微乎其微的出現率
-
-## CloudFormation
-- https://gitlab.com/ecloudture-dev/blog/aws-basic-of-cloudformation
-- https://gitlab.com/ecloudture/olympic/how-to-build-an-elastic-structure/blob/master/lab-network_yaml.yaml
-- https://gitlab.com/ecloudture/aws/ect-course/aws-architecture/tree/master/05-deploy-your-cloudformation-template
-- 分層級去看
-    - VPC, Subnet, Route, Gateway, SG, NACL, Endpoint
-    - EC2, Launch configuration/template, AutoScaling Group, Scaling Policy, CloudWatch Alarm
-    > 看需不需要透過cfn-init/userdata，安裝一些套件在EC2
-    - IAM Role
-    - ELB, Target Group, Listener, Routing Policy
-    - RDS, Multi-AZ
-    - DynamoDB
-    - S3, Bucket Policy, Block public access
-    - 有些相關配置要上`Depends On`、Export/Output參數出來的要記住
-
-- 能包的漂亮盡量包
-- 要上註解描述那一區塊在幹嘛
-- 飯粒們  
-    - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html
-    - https://github.com/awslabs/aws-cloudformation-templates
-    - https://github.com/widdix/aws-cf-templates
-
-### CloudFormer
-1. CloudFormation > Sample > 最下面
-2. 餵Username & password
-3. 看IAM有沒有權限建立起來，這Template會去建Role，有可能權限被鎖不能用
-4. Deploy好之後，透過HTTPS訪問EC2 IP，略過憑證檢查
-5. 開始打勾勾，最後一步會吐出Template in JSON
-    > 再去CloudFormation Designer裡面轉成yaml比較好看（私心推薦
 
 ## System manager
 - ec2要attached service role才能call

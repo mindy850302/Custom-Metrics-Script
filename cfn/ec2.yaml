@@ -9,6 +9,10 @@ Description: >-
 
 Parameters:
 
+  VpcId:
+    Description: The VPC of the worker instances
+    Type: AWS::EC2::VPC::Id
+
   NetworkStackName:
     Description: >-
       Name of an active CloudFormation stack that contains the networking
@@ -59,8 +63,7 @@ Resources:
     Properties:
       GroupName: "EC2 SG"
       GroupDescription: "Security group with allow HTTP"
-      VpcId: !Sub ${NetworkStackName}-VPCID
-      # VpcId: vpc-066402354c7268ada
+      VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80

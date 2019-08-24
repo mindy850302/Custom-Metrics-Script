@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EFS'
+
+Resources:
+
+  SharedStorage:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: false
+      PerformanceMode: generalPurpose
+      ThroughputMode: 'bursting'
+      # KmsKeyId: !GetAtt 
+      #   - key
+      #   - Arn
+#   key:
+#     Type: AWS::KMS::Key
+#     Properties:
+#       KeyPolicy:
+#         Version: 2012-10-17
+#         Id: key-default-1
+#         Statement:
+#           - Sid: Allow administration of the key
+#             Effect: Allow
+#             Principal:
+#               AWS: !Join 
+#                 - ''
+#                 - - 'arn:aws:iam::'
+#                   - !Ref 'AWS::AccountId'
+#                   - ':root'
+#             Action:
+#               - 'kms:*'
+#             Resource: '*'
+
+# Outputs:
+#   KeyId:
+#     Value: !GetAtt 
+#       - key
+# - Arn

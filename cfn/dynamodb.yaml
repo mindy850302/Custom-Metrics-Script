@@ -1,39 +1,12 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: 'State: DynamoDB table, a cloudonaut.io template, sponsored by https://github.com/ngault'
-Metadata:
-  'AWS::CloudFormation::Interface':
-    ParameterGroups:
-    - Label:
-        default: 'DynamoDB Parameters'
-      Parameters:
-      - TableName
-      - PartitionKeyName
-      - PartitionKeyType
-      - SortKeyName
-      - SortKeyType
-      - BillingAndScalingMode
-      - Encryption
-      - TimeToLiveAttributeName
-      - StreamViewType
-      - BackupRetentionPeriod
-      - BackupScheduleExpression
-      - PointInTimeRecoveryEnabled
-    - Label:
-        default: 'DynamoDB PROVISIONED Mode Parameters'
-      Parameters:
-      - MaxWriteCapacityUnits
-      - MinWriteCapacityUnits
-      - WriteCapacityUnitsUtilizationTarget
-      - MaxReadCapacityUnits
-      - MinReadCapacityUnits
-      - ReadCapacityUnitsUtilizationTarget
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  DynamoDB Template: DynamoDB Table
 
 Parameters:
 
-  ParentAlertStack:
-    Description: 'Optional but recommended stack name of parent alert stack based on operations/alert.yaml template.'
+  DDBEndpointId:
+    Description: The DynamoDB Endpoint ID of VPC
     Type: String
-    Default: ''
 
   TableName:
     Description: 'Optional name of the table (auto generated if not set).'
@@ -64,38 +37,8 @@ Parameters:
   BillingAndScalingMode:
     Description: 'Specify how you are charged for read and write throughput and how you manage capacity.'
     Type: String
-    Default: PROVISIONED
+    Default: ONDEMAND
     AllowedValues: [PROVISIONED, ONDEMAND]
-
-  MaxWriteCapacityUnits:
-    Description: 'Maximum write capacity units used during auto scaling (ignored when BillingAndScalingMode := ONDEMAND).'
-    Type: Number
-    Default: 1
-  
-  MinWriteCapacityUnits:
-    Description: 'Minimum write capacity units used during auto scaling (ignored when BillingAndScalingMode := ONDEMAND).'
-    Type: Number
-    Default: 1
-
-  WriteCapacityUnitsUtilizationTarget:
-    Description: 'Target write capacity utilization (in percent) that auto scaling tries to achieve (if you have spiky writes, a lower number is better; ignored when BillingAndScalingMode := ONDEMAND).'
-    Type: Number
-    Default: 80
-    
-  MaxReadCapacityUnits:
-    Description: 'Maximum read capacity units used during auto scaling (ignored when BillingAndScalingMode := ONDEMAND).'
-    Type: Number
-    Default: 1
-
-  MinReadCapacityUnits:
-    Description: 'Minimum read capacity units used during auto scaling (ignored when BillingAndScalingMode := ONDEMAND).'
-    Type: Number
-    Default: 1
-
-  ReadCapacityUnitsUtilizationTarget:
-    Description: 'Target read capacity utilization (in percent) that auto scaling tries to achieve (if you have spiky reads, a lower number is better; ignored when BillingAndScalingMode := ONDEMAND).'
-    Type: Number
-    Default: 80
 
   Encryption:
     Description: 'Enable server side encryption using KMS (AWS managed) CMK.'
@@ -103,28 +46,17 @@ Parameters:
     Default: false
     AllowedValues: [aws, false]
 
-  TimeToLiveAttributeName:
-    Description: 'Optional name of the Time to Live attribute used to store the expiration time (unix timestamp in seconds)'
-    Type: String
-    Default: ''
-
-  StreamViewType:
-    Description: 'Determines the information that the stream captures when an item in the table is modified.'
-    Type: String
-    Default: DISABLED
-    AllowedValues: [DISABLED, KEYS_ONLY, NEW_IMAGE, OLD_IMAGE, NEW_AND_OLD_IMAGES]
-
   BackupRetentionPeriod:
     Description: 'The number of days to keep backups of the table (set to 0 to disable).'
     Type: Number
     MinValue: 0
     MaxValue: 35
-    Default: 30
+    Default: 0
 
-  BackupScheduleExpression:
-    Description: 'A CRON expression specifying when AWS Backup initiates a backup job.'
-    Type: String
-    Default: 'cron(0 5 ? * * *)'
+  # BackupScheduleExpression:
+  #   Description: 'A CRON expression specifying when AWS Backup initiates a backup job.'
+  #   Type: String
+  #   Default: 'cron(0 5 ? * * *)'
 
   PointInTimeRecoveryEnabled:
     Description: 'Indicates whether point in time recovery is enabled (true) or disabled (false) on the table.'
@@ -132,15 +64,12 @@ Parameters:
     Default: true
     AllowedValues: [true, false]
 
-# Conditions:
-#   HasAlertTopic: !Not [!Equals [!Ref ParentAlertStack, '']]
-#   HasSortKey: !Not [!Equals [!Ref SortKeyName, '']]
-#   HasTableName: !Not [!Equals [!Ref TableName, '']]
-#   HasAwsManagedEncryption: !Equals [!Ref Encryption, aws]
-#   HasBillingAndScalingModeProvisioned: !Equals [!Ref BillingAndScalingMode, PROVISIONED]
-#   HasTimeToLiveAttributeName: !Not [!Equals [!Ref TimeToLiveAttributeName, '']]
-#   HasStream: !Not [!Equals [!Ref StreamViewType, 'DISABLED']]
-#   HasBackupRetentionPeriod: !Not [!Equals [!Ref BackupRetentionPeriod, 0]]
+Conditions:
+  HasSortKey: !Not [!Equals [!Ref SortKeyName, '']]
+  HasTableName: !Not [!Equals [!Ref TableName, '']]
+  HasAwsManagedEncryption: !Equals [!Ref Encryption, aws]
+  HasBillingAndScalingModeProvisioned: !Equals [!Ref BillingAndScalingMode, PROVISIONED]
+  HasBackupRetentionPeriod: !Not [!Equals [!Ref BackupRetentionPeriod, 0]]
 
 ######################
 # Resources section
@@ -171,190 +100,8 @@ Resources:
           KeyType: HASH
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !Ref PointInTimeRecoveryEnabled
-      ProvisionedThroughput: !If [HasBillingAndScalingModeProvisioned, {ReadCapacityUnits: !Ref MinReadCapacityUnits, WriteCapacityUnits: !Ref MinWriteCapacityUnits}, !Ref 'AWS::NoValue']
       SSESpecification:
         SSEEnabled: !If [HasAwsManagedEncryption, true, false]
-      TimeToLiveSpecification: !If [HasTimeToLiveAttributeName, {AttributeName: !Ref TimeToLiveAttributeName, Enabled: true}, !Ref 'AWS::NoValue']
-      StreamSpecification: !If [HasStream, {StreamViewType: !Ref StreamViewType}, !Ref 'AWS::NoValue']
-
-  RoleScaling:
-    Condition: HasBillingAndScalingModeProvisioned
-    Type: 'AWS::IAM::Role'
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-        - Effect: Allow
-          Principal:
-            Service: 'application-autoscaling.amazonaws.com'
-          Action: 'sts:AssumeRole'
-      Policies:
-      - PolicyName: scaling
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Effect: Allow
-            Action:
-            - 'dynamodb:DescribeTable'
-            - 'dynamodb:UpdateTable'
-            - 'cloudwatch:PutMetricAlarm'
-            - 'cloudwatch:DescribeAlarms'
-            - 'cloudwatch:GetMetricStatistics'
-            - 'cloudwatch:SetAlarmState'
-            - 'cloudwatch:DeleteAlarms'
-            Resource: '*'
-
-  WriteScalableTarget:
-    Condition: HasBillingAndScalingModeProvisioned
-    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
-    Properties:
-      MaxCapacity: !Ref MaxWriteCapacityUnits
-      MinCapacity: !Ref MinWriteCapacityUnits
-      ResourceId: !Sub 'table/${Table}'
-      RoleARN: !GetAtt 'RoleScaling.Arn'
-      ScalableDimension: 'dynamodb:table:WriteCapacityUnits'
-      ServiceNamespace: dynamodb
-
-  ReadScalableTarget:
-    Condition: HasBillingAndScalingModeProvisioned
-    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
-    Properties:
-      MaxCapacity: !Ref MaxReadCapacityUnits
-      MinCapacity: !Ref MinReadCapacityUnits
-      ResourceId: !Sub 'table/${Table}'
-      RoleARN: !GetAtt 'RoleScaling.Arn'
-      ScalableDimension: 'dynamodb:table:ReadCapacityUnits'
-      ServiceNamespace: dynamodb
-
-  WriteScalingPolicy:
-    Condition: HasBillingAndScalingModeProvisioned
-    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
-    Properties:
-      PolicyName: !Sub '${Table}-WriteScalingPolicy'
-      PolicyType: TargetTrackingScaling
-      ScalingTargetId: !Ref WriteScalableTarget
-      TargetTrackingScalingPolicyConfiguration:
-        TargetValue: !Ref WriteCapacityUnitsUtilizationTarget
-        ScaleInCooldown: 600
-        ScaleOutCooldown: 60
-        PredefinedMetricSpecification:
-          PredefinedMetricType: DynamoDBWriteCapacityUtilization
-
-  ReadScalingPolicy:
-    Condition: HasBillingAndScalingModeProvisioned
-    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
-    Properties:
-      PolicyName: !Sub '${Table}-ReadScalingPolicy'
-      PolicyType: TargetTrackingScaling
-      ScalingTargetId: !Ref ReadScalableTarget
-      TargetTrackingScalingPolicyConfiguration:
-        TargetValue: !Ref ReadCapacityUnitsUtilizationTarget
-        ScaleInCooldown: 600
-        ScaleOutCooldown: 60
-        PredefinedMetricSpecification:
-          PredefinedMetricType: DynamoDBReadCapacityUtilization
-
-  # # CloudWatch Alarm
-
-  # ReadThrottleEventsAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmDescription: 'Reads are throttled. Lower ReadCapacityUnitsUtilizationTarget or increase MaxReadCapacityUnits.'
-  #     Namespace: 'AWS/DynamoDB'
-  #     MetricName: ReadThrottleEvents
-  #     Dimensions:
-  #     - Name: TableName
-  #       Value: !Ref Table
-  #     Statistic: Sum
-  #     Period: 60
-  #     EvaluationPeriods: 1
-  #     Threshold: 1
-  #     ComparisonOperator: GreaterThanOrEqualToThreshold
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-
-  # WriteThrottleEventsAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmDescription: 'Writes are throttled. Lower WriteCapacityUnitsUtilizationTarget or increase MaxWriteCapacityUnits.'
-  #     Namespace: 'AWS/DynamoDB'
-  #     MetricName: WriteThrottleEvents
-  #     Dimensions:
-  #     - Name: TableName
-  #       Value: !Ref Table
-  #     Statistic: Sum
-  #     Period: 60
-  #     EvaluationPeriods: 1
-  #     Threshold: 1
-  #     ComparisonOperator: GreaterThanOrEqualToThreshold
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-
-  # ThrottledRequestsEventsAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmDescription: 'Batch requests are throttled. Lower {Read/Write}CapacityUnitsUtilizationTarget or increase Max{Read/Write}CapacityUnits.'
-  #     Namespace: 'AWS/DynamoDB'
-  #     MetricName: ThrottledRequests
-  #     Dimensions:
-  #     - Name: TableName
-  #       Value: !Ref Table
-  #     Statistic: Sum
-  #     Period: 60
-  #     EvaluationPeriods: 1
-  #     Threshold: 1
-  #     ComparisonOperator: GreaterThanOrEqualToThreshold
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-
-  # UserErrorsAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmDescription: 'User errors'
-  #     Namespace: 'AWS/DynamoDB'
-  #     MetricName: UserErrors
-  #     Dimensions:
-  #     - Name: TableName
-  #       Value: !Ref Table
-  #     Statistic: Sum
-  #     Period: 60
-  #     EvaluationPeriods: 1
-  #     Threshold: 1
-  #     ComparisonOperator: GreaterThanOrEqualToThreshold
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-
-  # SystemErrorsAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmDescription: 'System errors'
-  #     Namespace: 'AWS/DynamoDB'
-  #     MetricName: SystemErrors
-  #     Dimensions:
-  #     - Name: TableName
-  #       Value: !Ref Table
-  #     Statistic: Sum
-  #     Period: 60
-  #     EvaluationPeriods: 1
-  #     Threshold: 1
-  #     ComparisonOperator: GreaterThanOrEqualToThreshold
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
 
   # # Backup Setting
 
@@ -363,7 +110,7 @@ Resources:
   #   Type: 'AWS::Backup::BackupVault'
   #   Properties:
   #     BackupVaultName: !Ref 'AWS::StackName'
-  #     Notifications: !If [HasAlertTopic, {BackupVaultEvents: [BACKUP_JOB_STARTED, BACKUP_JOB_COMPLETED, RESTORE_JOB_STARTED, RESTORE_JOB_COMPLETED, RECOVERY_POINT_MODIFIED], SNSTopicArn: {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}}, !Ref 'AWS::NoValue']
+  
  
   # BackupPlan:
   #   Condition: HasBackupRetentionPeriod
@@ -425,7 +172,7 @@ Resources:
 Outputs:
   
   TableName:
-    Description: 'Name of the table'
+    Description: 'Name of DynamoDB table'
     Value: !Ref Table
     Export:
       Name: !Sub '${AWS::StackName}-TableName'

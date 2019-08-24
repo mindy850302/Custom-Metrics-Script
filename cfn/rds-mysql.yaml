@@ -2,40 +2,30 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: >-
   Network Template: RDS with MySQL engine
 
-Metadata:
-  'AWS::CloudFormation::Interface':
-    ParameterGroups:
-    - Label:
-        default: 'RDS Parameters'
-      Parameters:
-      - DBSnapshotIdentifier
-      - EngineVersion
-      - DBAllocatedStorage
-      - DBInstanceClass
-      - DBName
-      - DBBackupRetentionPeriod
-      - DBMasterUsername
-      - DBMasterUserPassword
-      - DBMultiAZ
-      - PreferredBackupWindow
-      - PreferredMaintenanceWindow
-
 Parameters:
 
-  NetworkStackName:
-    Description: >-
-      Name of an active CloudFormation stack that contains the networking
-      resources, such as the VPC and subnet that will be used in this stack.
-    Type: String
-    MinLength: 1
-    MaxLength: 255
-    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
-    Default: test-vpc
+  VpcId:
+    Description: The VPC of the worker instances
+    Type: AWS::EC2::VPC::Id
+  
+  RDSSubnets:
+    Description: Select 2 subnets where RDS can be created.
+    Type: List<AWS::EC2::Subnet::Id>
 
-  # ParentAlertStack:
-  #   Description: 'Optional but recommended stack name of parent alert stack based on operations/alert.yaml template.'
+  SourceAllow2AccessDB:
+    Description: Source SG Allow 2 Access RDS SG.
+    Type: String
+    Default: 'sg-xxxxxx'
+
+  # NetworkStackName:
+  #   Description: >-
+  #     Name of an active CloudFormation stack that contains the networking
+  #     resources, such as the VPC and subnet that will be used in this stack.
   #   Type: String
-  #   Default: ''
+  #   MinLength: 1
+  #   MaxLength: 255
+  #   AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+  #   Default: test-vpc
 
   DBSnapshotIdentifier:
     Description: 'Optional name or Amazon Resource Name (ARN) of the DB snapshot from which you want to restore (leave blank to create an empty database).'
@@ -45,7 +35,7 @@ Parameters:
   DBAllocatedStorage:
     Description: 'The allocated storage size, specified in GB (ignored when DBSnapshotIdentifier is set, value used from snapshot).'
     Type: Number
-    Default: 5
+    Default: 20
     MinValue: 5
     MaxValue: 16384
 
@@ -64,7 +54,7 @@ Parameters:
     Type: Number
     MinValue: 0
     MaxValue: 35
-    Default: 30
+    Default: 14
 
   DBMasterUsername:
     Description: 'The master user name for the DB instance (ignored when DBSnapshotIdentifier is set, value used from snapshot).'
@@ -99,9 +89,6 @@ Parameters:
     Default: '5.7.21'
     AllowedValues: ['8.0.15', '5.7.25', '5.7.21', '5.6.41', '5.5.61'] # aws rds describe-db-engine-versions --engine mysql --query "DBEngineVersions[].EngineVersion"
 
-# Conditions:
-#   HasAlertTopic: !Not [!Equals [!Ref ParentAlertStack, '']]
-
 ######################
 # Resources section
 ######################
@@ -114,21 +101,22 @@ Resources:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: !Ref 'AWS::StackName'
-      VpcId: {'Fn::ImportValue': !Sub '${ParentVPCStack}-VPC'}
+      VpcId: !Ref VpcId
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: 3306
         ToPort: 3306
-        SourceSecurityGroupId: {'Fn::ImportValue': !Sub '${ParentClientStack}-ClientSecurityGroup'}
+        SourceSecurityGroupId: !Ref SourceAllow2AccessDB
 
   DBSubnetGroup:
     Type: 'AWS::RDS::DBSubnetGroup'
     Properties:
       DBSubnetGroupDescription: !Ref 'AWS::StackName'
-      SubnetIds: !Split [',', {
-        'Fn::ImportValue': !Sub '${NetworkStackName}-PrivateSubnet1',
-        'Fn::ImportValue': !Sub '${NetworkStackName}-PrivateSubnet2',
-      }]
+      SubnetIds: !Ref RDSSubnets
+      # SubnetIds: !Split [',', {
+      #   'Fn::ImportValue': !Sub '${NetworkStackName}-PrivateSubnet1',
+      #   'Fn::ImportValue': !Sub '${NetworkStackName}-PrivateSubnet2',
+      # }]
 
   # RDS Instance
 
@@ -137,6 +125,7 @@ Resources:
     UpdateReplacePolicy: Snapshot
     Type: 'AWS::RDS::DBInstance'
     Properties:
+      AllocatedStorage: !Ref DBAllocatedStorage
       AllowMajorVersionUpgrade: false
       AutoMinorVersionUpgrade: true
       BackupRetentionPeriod: !Ref DBBackupRetentionPeriod
@@ -154,163 +143,6 @@ Resources:
       StorageType: gp2
       VPCSecurityGroups:
       - !Ref DatabaseSecurityGroup
-
-  # # CloudWatch Alarm
-
-  # DatabaseBurstBalanceTooLowAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database storage burst balance over last 10 minutes too low, expect a significant performance drop soon.'
-  #     ComparisonOperator: LessThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: BurstBalance
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 20
-
-  # DatabaseCPUUtilizationTooHighAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database CPU utilization over last 10 minutes too high.'
-  #     ComparisonOperator: GreaterThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: CPUUtilization
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 80
-
-  # DatabaseCPUCreditBalanceTooLowAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database CPU credit balance over last 10 minutes too low, expect a significant performance drop soon.'
-  #     ComparisonOperator: LessThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: CPUCreditBalance
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 20
-
-  # DatabaseDiskQueueDepthTooHighAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database disk queue depth over last 10 minutes too high, performance may suffer.'
-  #     ComparisonOperator: GreaterThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: DiskQueueDepth
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 64
-
-  # DatabaseFreeableMemoryTooLowAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database freeable memory over last 10 minutes too low, performance may suffer.'
-  #     ComparisonOperator: LessThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: FreeableMemory
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 64000000 # 64 Megabyte in Byte
-
-  # DatabaseFreeStorageSpaceTooLowAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database free storage space over last 10 minutes too low.'
-  #     ComparisonOperator: LessThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: FreeStorageSpace
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 2000000000 # 2 Gigabyte in Byte
-
-  # DatabaseSwapUsageTooHighAlarm:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::CloudWatch::Alarm'
-  #   Properties:
-  #     AlarmActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     AlarmDescription: 'Average database swap usage over last 10 minutes too high, performance may suffer.'
-  #     ComparisonOperator: GreaterThanThreshold
-  #     Dimensions:
-  #     - Name: DBInstanceIdentifier
-  #       Value: !Ref DBInstance
-  #     EvaluationPeriods: 1
-  #     MetricName: SwapUsage
-  #     Namespace: 'AWS/RDS'
-  #     OKActions:
-  #     - {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     Period: 600
-  #     Statistic: Average
-  #     Threshold: 256000000 # 256 Megabyte in Byte
-
-  # DatabaseEventSubscription:
-  #   Condition: HasAlertTopic
-  #   Type: 'AWS::RDS::EventSubscription'
-  #   Properties:
-  #     EventCategories:
-  #     - failover
-  #     - failure
-  #     - 'low storage'
-  #     - maintenance
-  #     - notification
-  #     - recovery
-  #     SnsTopicArn: {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}
-  #     SourceIds: [!Ref DBInstance]
-  #     SourceType: 'db-instance'
 
 ######################
 # Outputs section

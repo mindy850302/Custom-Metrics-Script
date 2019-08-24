@@ -303,57 +303,57 @@ Resources:
       Egress: true
       CidrBlock: '0.0.0.0/0'   
 
-  ## Security Group for EC2
+  # ## Security Group for EC2
 
-  WebSecurityGroup:  
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupName: "Web SG"
-      GroupDescription: "Security group with allow ELB"
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref SSHLocation
+  # WebSecurityGroup:  
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupName: "Web SG"
+  #     GroupDescription: "Security group with allow ELB"
+  #     VpcId: !Ref VPC
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 80
+  #         ToPort: 80
+  #         SourceSecurityGroupId: !Ref ALBSecurityGroup
+  #       - IpProtocol: tcp
+  #         FromPort: 22
+  #         ToPort: 22
+  #         CidrIp: !Ref SSHLocation
 
-  ## Security Group for ALB
+  # ## Security Group for ALB
 
-  ALBSecurityGroup:  
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupName: "ALB SG"
-      GroupDescription: "Security group with allow HTTP(s)"
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0    
+  # ALBSecurityGroup:  
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupName: "ALB SG"
+  #     GroupDescription: "Security group with allow HTTP(s)"
+  #     VpcId: !Ref VPC
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 80
+  #         ToPort: 80
+  #         CidrIp: 0.0.0.0/0
+  #       - IpProtocol: tcp
+  #         FromPort: 443
+  #         ToPort: 443
+  #         CidrIp: 0.0.0.0/0    
 
-  ## Security Group for DB
+  # ## Security Group for DB
 
-  MySQLSecurityGroup:  
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupName: "MySQL SG"
-      GroupDescription: "Security group with allow EC2"
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 3306
-          ToPort: 3306
-          SourceSecurityGroupId: !Ref WebSecurityGroup
+  # MySQLSecurityGroup:  
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupName: "MySQL SG"
+  #     GroupDescription: "Security group with allow EC2"
+  #     VpcId: !Ref VPC
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 3306
+  #         ToPort: 3306
+  #         SourceSecurityGroupId: !Ref WebSecurityGroup
  
-  ## S3 Endpoint
+  ## Endpoint
   
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -374,7 +374,27 @@ Resources:
         - !Ref PublicRouteTable
         - !Ref PrivateRouteTable1
         - !Ref PrivateRouteTable2
-          
+
+  DDBEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
+      VpcEndpointType: "Gateway"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - "dynamodb:*"
+            Resource:
+              - "*"
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateRouteTable1
+        - !Ref PrivateRouteTable2      
+
 
 ######################
 # Outputs section
@@ -386,13 +406,19 @@ Outputs:
     Description: VPC ID
     Value: !Ref VPC
     Export:
-      Name: !Sub '${AWS::StackName}-VPCID'
+      Name: !Sub '${AWS::StackName}-VPC'
   
   S3Endpoint:
     Description: S3 Endpoint Gateway ID
     Value: !Ref S3Endpoint
     Export:
-      Name: !Sub '${AWS::StackName}-S3EndpointGWID'
+      Name: !Sub '${AWS::StackName}-S3EndpointGW'
+
+  DDBEndpoint:
+    Description: DynamoDB Endpoint Gateway ID
+    Value: !Ref DDBEndpoint
+    Export:
+      Name: !Sub '${AWS::StackName}-DDBEndpointGW'
 
   PublicSubnet1:
     Description: The subnet ID to use for public subnet
@@ -418,22 +444,22 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-PrivateSubnet2'
   
-  WebSG:
-    Description: The subnet ID to use for private subnet
-    Value: !Ref WebSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-WebSG' 
+  # WebSG:
+  #   Description: The subnet ID to use for private subnet
+  #   Value: !Ref WebSecurityGroup
+  #   Export:
+  #     Name: !Sub '${AWS::StackName}-WebSG' 
 
-  ALBSG:
-    Description: The subnet ID to use for private subnet
-    Value: !Ref ALBSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-ALBSG'
+  # ALBSG:
+  #   Description: The subnet ID to use for private subnet
+  #   Value: !Ref ALBSecurityGroup
+  #   Export:
+  #     Name: !Sub '${AWS::StackName}-ALBSG'
 
-  DBSG:
-    Description: The subnet ID to use for private subnet
-    Value: !Ref MySQLSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-DBSG'
+  # DBSG:
+  #   Description: The subnet ID to use for private subnet
+  #   Value: !Ref MySQLSecurityGroup
+  #   Export:
+  #     Name: !Sub '${AWS::StackName}-DBSG'
 
 

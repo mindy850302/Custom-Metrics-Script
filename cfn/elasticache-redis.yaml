@@ -11,18 +11,34 @@ Metadata:
       - CacheNodeType
       - TransitEncryption
       - AuthToken
+      - VpcId
+      - ECSubnets
+      - SourceAllow2AccessRedis
 
 Parameters:
 
-  NetworkStackName:
-    Description: >-
-      Name of an active CloudFormation stack that contains the networking
-      resources, such as the VPC and subnet that will be used in this stack.
+  VpcId:
+    Description: The VPC of the worker instances
+    Type: AWS::EC2::VPC::Id
+
+  ECSubnets:
+    Description: Select 2 subnets where ElastiCache can be created.
+    Type: List<AWS::EC2::Subnet::Id>
+
+  SourceAllow2AccessRedis:
+    Description: Source SG Allow 2 Access ElastiCache Redis.
     Type: String
-    MinLength: 1
-    MaxLength: 255
-    AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
-    Default: test-vpc
+    Default: 'sg-xxxxxx'
+
+  # NetworkStackName:
+  #   Description: >-
+  #     Name of an active CloudFormation stack that contains the networking
+  #     resources, such as the VPC and subnet that will be used in this stack.
+  #   Type: String
+  #   MinLength: 1
+  #   MaxLength: 255
+  #   AllowedPattern: '^[a-zA-Z][-a-zA-Z0-9]*$'
+  #   Default: test-vpc
 
   EngineVersion:
     Description: 'Redis version'
@@ -65,9 +81,6 @@ Mappings:
       CacheParameterGroupFamily: 'redis5.0'
 
 Conditions:
-  # HasZone: !Not [!Equals [!Ref ParentZoneStack, '']]
-  # HasSSHBastionSecurityGroup: !Not [!Equals [!Ref ParentSSHBastionStack, '']]
-  HasAlertTopic: !Not [!Equals [!Ref ParentAlertStack, '']]
   HasAuthToken: !Not [!Equals [!Ref AuthToken, '']]
 
 
@@ -88,22 +101,21 @@ Resources:
     Type: 'AWS::ElastiCache::SubnetGroup'
     Properties:
       Description: !Ref 'AWS::StackName'
-      SubnetIds: !Split
-      - ','
-      - 'Fn::ImportValue': !Sub '${ParentVPCStack}-SubnetsPrivate'
+      SubnetIds: !Ref ECSubnets
+      # SubnetIds: !Split
+      # - ','
+      # - 'Fn::ImportValue': !Sub '${ParentVPCStack}-SubnetsPrivate'
 
   SecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: !Ref 'AWS::StackName'
-      VpcId:
-        'Fn::ImportValue': !Sub '${ParentVPCStack}-VPC'
+      VpcId: !Ref VpcId
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: 6379
         ToPort: 6379
-        SourceSecurityGroupId:
-          'Fn::ImportValue': !Sub '${ParentClientStack}-ClientSecurityGroup'
+        SourceSecurityGroupId: !Ref SourceAllow2AccessRedis
 
   ReplicationGroup:
     DeletionPolicy: Snapshot
@@ -119,7 +131,6 @@ Resources:
       CacheSubnetGroupName: !Ref CacheSubnetGroupName
       Engine: redis
       EngineVersion: !Ref EngineVersion
-      NotificationTopicArn: !If [HasAlertTopic, {'Fn::ImportValue': !Sub '${ParentAlertStack}-TopicARN'}, !Ref 'AWS::NoValue']
       NumNodeGroups: 1
       ReplicasPerNodeGroup: 1
       PreferredMaintenanceWindow: 'sat:07:00-sat:08:00'
